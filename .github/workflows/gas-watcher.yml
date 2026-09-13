@@ -54,7 +54,7 @@ jobs:
               "location": os.environ["LOCATION"],
               "radius_km": 5,
               "fuel_type": "e5",
-              "price_threshold": 2,
+              "price_threshold": 3,
               "check_interval_minutes": 10,
           }
           with open("config.json", "w", encoding="utf-8") as f:
