@@ -47,7 +47,7 @@ def load_state():
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"already_notified": False, "station_ids": None, "coords": None}
+    return {"already_notified": False, "station_ids": None, "coords": None, "stations": {}}
 
 
 def save_state(state):
@@ -104,6 +104,17 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str):
         print(f"⚠️ فشل إرسال رسالة تليجرام: {resp.text}")
 
 
+def describe_station(state: dict, station_id: str) -> str:
+    info = state.get("stations", {}).get(station_id)
+    if not info:
+        return station_id
+    name = info.get("name", "").strip()
+    address = ", ".join(
+        part for part in [info.get("street", "").strip(), info.get("place", "").strip()] if part
+    )
+    return f"{name} ({address})" if address else name or station_id
+
+
 def check_prices(config: dict, state: dict):
     fuel_type = config["fuel_type"]  # e5, e10, diesel
     threshold = float(config["price_threshold"])
@@ -129,7 +140,8 @@ def check_prices(config: dict, state: dict):
         print(f"[{timestamp}] مفيش أسعار متاحة دلوقتي (كل المحطات مقفولة؟)")
         return
 
-    print(f"[{timestamp}] أرخص سعر {fuel_type}: {best_price:.3f} € (محطة {best_station_id})")
+    best_station_label = describe_station(state, best_station_id)
+    print(f"[{timestamp}] أرخص سعر {fuel_type}: {best_price:.3f} € (محطة {best_station_label})")
 
     if best_price < threshold:
         if not state["already_notified"]:
@@ -137,7 +149,7 @@ def check_prices(config: dict, state: dict):
                 f"⛽ السعر نزل!\n"
                 f"{fuel_type.upper()}: {best_price:.3f} €\n"
                 f"العتبة اللي انت حددها: {threshold:.3f} €\n"
-                f"محطة: {best_station_id}"
+                f"محطة: {best_station_label}"
             )
             send_telegram_message(config["telegram_bot_token"], config["telegram_chat_id"], message)
             state["already_notified"] = True
@@ -154,13 +166,21 @@ def main():
     state = load_state()
 
     # هات الإحداثيات ومحطات القريبة مرة واحدة بس، وبعدين احتفظ بيهم
-    if not state.get("station_ids"):
+    if not state.get("station_ids") or not state.get("stations"):
         lat, lng = geocode_location(config["location"])
         stations = find_nearby_stations(
             config["tankerkoenig_api_key"], lat, lng, config.get("radius_km", 5)
         )
         state["coords"] = [lat, lng]
         state["station_ids"] = [s["id"] for s in stations]
+        state["stations"] = {
+            s["id"]: {
+                "name": s.get("name", ""),
+                "street": f"{s.get('street', '')} {s.get('houseNumber', '')}".strip(),
+                "place": f"{s.get('postCode', '')} {s.get('place', '')}".strip(),
+            }
+            for s in stations
+        }
         save_state(state)
         print(f"📍 هيتم متابعة {len(stations)} محطة حوالين {config['location']}")
 
