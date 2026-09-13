@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-مراقب سعر البنزين في ألمانيا (Tankerkönig API) + إشعار تليجرام
-================================================================
-بيدور على أقرب محطات بنزين لمدينتك/الرمز البريدي، وبيتابع السعر،
-وأول ما ينزل تحت القيمة اللي انت حددها هيبعتلك رسالة على تليجرام.
+German gas price watcher (Tankerkönig API) + Telegram alert
+=============================================================
+Finds the gas stations nearest to your city/postal code, tracks the
+price, and sends you a Telegram message the moment it drops below
+the threshold you set.
 
-قبل التشغيل لازم:
-  1) تطلب API key مجاني من Tankerkönig:
+Before running:
+  1) Request a free API key from Tankerkönig:
      https://creativecommons.tankerkoenig.de/
-     (بيوصلك بالإيميل خلال يوم أو اتنين)
-  2) تعمل بوت تليجرام عن طريق @BotFather وتاخد الـ token
-  3) تجيب الـ chat_id بتاعك (اتكلم مع البوت مرة، وبعدين شغّل:
-     get_telegram_chat_id.py المرفق مع السكريبت ده)
-  4) تملى ملف config.json بالبيانات دي
+     (arrives by email within a day or two)
+  2) Create a Telegram bot via @BotFather and get the token
+  3) Get your chat_id (message the bot once, then run:
+     get_telegram_chat_id.py, included alongside this script)
+  4) Fill in config.json with the above
 
-تشغيل:
+Run:
     pip install requests
     python gas_price_watcher.py
 """
@@ -38,7 +39,7 @@ TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        sys.exit(f"❌ ملف الإعدادات مش موجود: {CONFIG_PATH}\nاعمل نسخة من config.example.json واملأه.")
+        sys.exit(f"❌ Config file not found: {CONFIG_PATH}\nCopy config.example.json and fill it in.")
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -56,14 +57,14 @@ def save_state(state):
 
 
 def geocode_location(location: str):
-    """يحول اسم المدينة أو الرمز البريدي لإحداثيات (lat, lng)."""
+    """Converts a city name or postal code into (lat, lng) coordinates."""
     params = {"q": f"{location}, Germany", "format": "json", "limit": 1}
     headers = {"User-Agent": "gas-price-watcher/1.0"}
     resp = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=15)
     resp.raise_for_status()
     results = resp.json()
     if not results:
-        sys.exit(f"❌ مقدرتش ألاقي إحداثيات للمكان: {location}")
+        sys.exit(f"❌ Couldn't find coordinates for location: {location}")
     return float(results[0]["lat"]), float(results[0]["lon"])
 
 
@@ -80,10 +81,10 @@ def find_nearby_stations(api_key: str, lat: float, lng: float, radius_km: float)
     resp.raise_for_status()
     data = resp.json()
     if not data.get("ok"):
-        sys.exit(f"❌ خطأ من Tankerkönig API: {data.get('message', data)}")
+        sys.exit(f"❌ Error from Tankerkönig API: {data.get('message', data)}")
     stations = data.get("stations", [])
     if not stations:
-        sys.exit("❌ مفيش محطات قريبة منك في الرادِيوس ده، زوّد radius_km في config.json")
+        sys.exit("❌ No stations found nearby within that radius — increase radius_km in config.json")
     return stations
 
 
@@ -93,7 +94,7 @@ def get_prices(api_key: str, station_ids):
     resp.raise_for_status()
     data = resp.json()
     if not data.get("ok"):
-        sys.exit(f"❌ خطأ من Tankerkönig API: {data.get('message', data)}")
+        sys.exit(f"❌ Error from Tankerkönig API: {data.get('message', data)}")
     return data.get("prices", {})
 
 
@@ -101,7 +102,7 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str):
     url = TELEGRAM_SEND_URL.format(token=bot_token)
     resp = requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=15)
     if resp.status_code != 200:
-        print(f"⚠️ فشل إرسال رسالة تليجرام: {resp.text}")
+        print(f"⚠️ Failed to send Telegram message: {resp.text}")
 
 
 def describe_station(state: dict, station_id: str) -> str:
@@ -137,24 +138,24 @@ def check_prices(config: dict, state: dict):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     if best_price is None:
-        print(f"[{timestamp}] مفيش أسعار متاحة دلوقتي (كل المحطات مقفولة؟)")
+        print(f"[{timestamp}] No prices available right now (all stations closed?)")
         return
 
     best_station_label = describe_station(state, best_station_id)
-    print(f"[{timestamp}] أرخص سعر {fuel_type}: {best_price:.3f} € (محطة {best_station_label})")
+    print(f"[{timestamp}] Cheapest {fuel_type} price: {best_price:.3f} € (station {best_station_label})")
 
     if best_price < threshold:
         if not state["already_notified"]:
             message = (
-                f"⛽ السعر نزل!\n"
+                f"⛽ Price dropped!\n"
                 f"{fuel_type.upper()}: {best_price:.3f} €\n"
-                f"العتبة اللي انت حددها: {threshold:.3f} €\n"
-                f"محطة: {best_station_label}"
+                f"Your threshold: {threshold:.3f} €\n"
+                f"Station: {best_station_label}"
             )
             send_telegram_message(config["telegram_bot_token"], config["telegram_chat_id"], message)
             state["already_notified"] = True
             save_state(state)
-            print("✅ اتبعت رسالة تليجرام")
+            print("✅ Telegram message sent")
     else:
         if state["already_notified"]:
             state["already_notified"] = False
@@ -165,7 +166,7 @@ def main():
     config = load_config()
     state = load_state()
 
-    # هات الإحداثيات ومحطات القريبة مرة واحدة بس، وبعدين احتفظ بيهم
+    # Fetch coordinates and nearby stations once, then keep them cached
     if not state.get("station_ids") or not state.get("stations"):
         lat, lng = geocode_location(config["location"])
         stations = find_nearby_stations(
@@ -182,7 +183,7 @@ def main():
             for s in stations
         }
         save_state(state)
-        print(f"📍 هيتم متابعة {len(stations)} محطة حوالين {config['location']}")
+        print(f"📍 Now tracking {len(stations)} stations near {config['location']}")
 
     interval_minutes = int(config.get("check_interval_minutes", 15))
 
@@ -190,12 +191,12 @@ def main():
         check_prices(config, state)
         return
 
-    print(f"🔄 المتابعة شغالة، هيتم الفحص كل {interval_minutes} دقيقة... (Ctrl+C للإيقاف)")
+    print(f"🔄 Watching started, checking every {interval_minutes} minute(s)... (Ctrl+C to stop)")
     while True:
         try:
             check_prices(config, state)
         except Exception as e:
-            print(f"⚠️ حصل خطأ: {e}")
+            print(f"⚠️ An error occurred: {e}")
         time.sleep(interval_minutes * 60)
 
 

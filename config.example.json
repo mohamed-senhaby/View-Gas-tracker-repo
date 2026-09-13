@@ -1,0 +1,10 @@
+{
+  "tankerkoenig_api_key": "put_your_Tankerkoenig_key_here",
+  "telegram_bot_token": "put_your_bot_token_here",
+  "telegram_chat_id": "put_your_chat_id_here",
+  "location": "Oberhausen",
+  "radius_km": 5,
+  "fuel_type": "e5",
+  "price_threshold": 1.65,
+  "check_interval_minutes": 15
+}
