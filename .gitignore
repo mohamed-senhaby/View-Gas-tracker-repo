@@ -1,0 +1,12 @@
+# secrets — never commit your real config
+config.json
+state.json
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# misc local artifacts
+ruvector.db
+.DS_Store
