@@ -35,6 +35,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 TANKERKOENIG_LIST_URL = "https://creativecommons.tankerkoenig.de/json/list.php"
 TANKERKOENIG_PRICES_URL = "https://creativecommons.tankerkoenig.de/json/prices.php"
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_GET_UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
 
 def load_config():
@@ -48,7 +49,14 @@ def load_state():
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"already_notified": False, "station_ids": None, "coords": None, "stations": {}}
+    return {
+        "already_notified": False,
+        "station_ids": None,
+        "coords": None,
+        "stations": {},
+        "telegram_update_offset": None,
+        "price_threshold_override": None,
+    }
 
 
 def save_state(state):
@@ -105,6 +113,64 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str):
         print(f"⚠️ Failed to send Telegram message: {resp.text}")
 
 
+def poll_threshold_command(config: dict, state: dict):
+    """Checks for a /threshold <price> message sent to the bot and, if
+    found, overrides the price threshold in state.json. Only messages from
+    the configured telegram_chat_id are honored."""
+    bot_token = config["telegram_bot_token"]
+    chat_id = str(config["telegram_chat_id"])
+    offset = state.get("telegram_update_offset")
+
+    url = TELEGRAM_GET_UPDATES_URL.format(token=bot_token)
+    params = {"timeout": 0}
+    if offset is not None:
+        params["offset"] = offset
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        print(f"⚠️ Failed to poll Telegram for commands: {data}")
+        return
+
+    updates = data.get("result", [])
+    if not updates:
+        return
+
+    state["telegram_update_offset"] = updates[-1]["update_id"] + 1
+
+    # First ever poll: just record the offset, don't act on old backlog messages
+    if offset is None:
+        save_state(state)
+        return
+
+    for update in updates:
+        message = update.get("message") or update.get("edited_message")
+        if not message:
+            continue
+        if str(message.get("chat", {}).get("id")) != chat_id:
+            continue
+        text = (message.get("text") or "").strip()
+        if not text.lower().startswith("/threshold"):
+            continue
+
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            send_telegram_message(bot_token, chat_id, "Usage: /threshold <price>, e.g. /threshold 1.70")
+            continue
+        try:
+            new_threshold = float(parts[1].replace(",", "."))
+        except ValueError:
+            send_telegram_message(bot_token, chat_id, f"Couldn't read '{parts[1]}' as a price.")
+            continue
+
+        state["price_threshold_override"] = new_threshold
+        state["already_notified"] = False
+        send_telegram_message(bot_token, chat_id, f"✅ Threshold set to {new_threshold:.3f} €")
+        print(f"🔧 Threshold updated via Telegram: {new_threshold:.3f} €")
+
+    save_state(state)
+
+
 def describe_station(state: dict, station_id: str) -> str:
     info = state.get("stations", {}).get(station_id)
     if not info:
@@ -118,7 +184,8 @@ def describe_station(state: dict, station_id: str) -> str:
 
 def check_prices(config: dict, state: dict):
     fuel_type = config["fuel_type"]  # e5, e10, diesel
-    threshold = float(config["price_threshold"])
+    override = state.get("price_threshold_override")
+    threshold = float(override) if override is not None else float(config["price_threshold"])
     station_ids = state["station_ids"]
 
     prices = get_prices(config["tankerkoenig_api_key"], station_ids)
@@ -188,12 +255,14 @@ def main():
     interval_minutes = int(config.get("check_interval_minutes", 15))
 
     if "--once" in sys.argv:
+        poll_threshold_command(config, state)
         check_prices(config, state)
         return
 
     print(f"🔄 Watching started, checking every {interval_minutes} minute(s)... (Ctrl+C to stop)")
     while True:
         try:
+            poll_threshold_command(config, state)
             check_prices(config, state)
         except Exception as e:
             print(f"⚠️ An error occurred: {e}")
